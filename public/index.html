@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic Shield — Live Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div>
+      <div class="eyebrow">Distributed Rate-Limiter · Adaptive Traffic Shield</div>
+      <h1>A SMART BOUNCER<br>FOR YOUR SERVER</h1>
+      <div class="tagline">Live view of the real backend: Redis-backed token buckets, a trained logistic-regression classifier, and an adaptive policy engine — reading directly from <code>/api/state</code>.</div>
+    </div>
+    <div class="gauge-box">
+      <div class="gauge-label">Live Classification</div>
+      <svg width="200" height="110" viewBox="0 0 200 110">
+        <path d="M15,100 A85,85 0 0,1 185,100" fill="none" stroke="#1A2440" stroke-width="14" stroke-linecap="round"/>
+        <path d="M15,100 A85,85 0 0,1 100,15" fill="none" stroke="#5C1F22" stroke-width="14" stroke-linecap="round"/>
+        <path d="M100,15 A85,85 0 0,1 185,100" fill="none" stroke="#1B5C3C" stroke-width="14" stroke-linecap="round"/>
+        <g id="needle" style="transform-origin:100px 100px; transform:rotate(-90deg);">
+          <line x1="100" y1="100" x2="100" y2="30" stroke="#F5A623" stroke-width="4" stroke-linecap="round"/>
+          <circle cx="100" cy="100" r="6" fill="#F5A623"/>
+        </g>
+      </svg>
+      <div class="gauge-verdict" id="verdict">MONITORING</div>
+      <div class="gauge-score" id="score">—</div>
+    </div>
+  </div>
+
+  <div class="status-line">
+    <span>Adaptive mode: <b id="adaptive-mode">normal</b></span>
+    <span>Bucket capacity: <b id="cap">10</b> tokens</span>
+    <span>Refill rate: <b id="refill">2.0</b> tokens/sec</span>
+    <span>Throttled sources: <b id="throttled">none</b></span>
+  </div>
+
+  <div class="hint">
+    Run <code>npm run simulate:flashsale</code> or <code>npm run simulate:attack</code> in another terminal to send real traffic at this server and watch it react here.
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2><span class="dot"></span>Live Request Traffic</h2>
+      <canvas id="chart" width="700" height="220"></canvas>
+    </div>
+    <div class="panel">
+      <h2><span class="dot"></span>Classifier Signals</h2>
+      <div class="signal">
+        <div class="signal-top"><span>Timing regularity (human vs bot)</span><span id="sig1-val">—</span></div>
+        <div class="signal-track"><div class="signal-fill" id="sig1"></div></div>
+      </div>
+      <div class="signal">
+        <div class="signal-top"><span>Source diversity</span><span id="sig2-val">—</span></div>
+        <div class="signal-track"><div class="signal-fill" id="sig2"></div></div>
+      </div>
+      <div class="signal">
+        <div class="signal-top"><span>Endpoint variety</span><span id="sig3-val">—</span></div>
+        <div class="signal-track"><div class="signal-fill" id="sig3"></div></div>
+      </div>
+      <h2 style="margin-top:18px;"><span class="dot"></span>Live Token Buckets (Redis)</h2>
+      <div class="buckets" id="buckets"></div>
+    </div>
+  </div>
+
+  <div class="panel log-panel">
+    <h2><span class="dot"></span>Live Request Log</h2>
+    <div class="log-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>Source</th><th>Endpoint</th><th>Decision</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><div class="n" id="m-total">0</div><div class="l">Total Requests</div></div>
+    <div class="metric"><div class="n allowed" id="m-allowed">0</div><div class="l">Allowed</div></div>
+    <div class="metric"><div class="n blocked" id="m-blocked">0</div><div class="l">Blocked</div></div>
+    <div class="metric"><div class="n" id="m-rps">0</div><div class="l">Requests / sec</div></div>
+  </div>
+
+  <footer>Real Express + Redis backend · Token bucket via atomic Lua script · Logistic regression classifier trained offline (scripts/trainClassifier.js)</footer>
+</div>
+<script src="dashboard.js"></script>
+</body>
+</html>

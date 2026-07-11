@@ -1,0 +1,17 @@
+{
+  "features": [
+    "timingRegularity",
+    "sourceDiversity",
+    "endpointDiversity"
+  ],
+  "w": [
+    6.36194576990058,
+    7.455265580395968,
+    6.323640782046772
+  ],
+  "b": -7.324530030660681,
+  "trainedAt": "2026-07-08T11:22:23.720Z",
+  "trainAccuracy": 0.9992,
+  "testAccuracy": 0.999,
+  "note": "Logistic regression trained on synthetic traffic features. See scripts/trainClassifier.js for the generative assumptions."
+}
