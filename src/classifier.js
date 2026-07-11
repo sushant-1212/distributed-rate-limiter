@@ -1,33 +1,33 @@
 const fs = require('fs');
 const path = require('path');
 const { extractFeatures } = require('./features');
+const { anomalyScore } = require('./isolationForest');
 
-const WEIGHTS_PATH = path.join(__dirname, '..', 'models', 'weights.json');
+const MODEL_PATH = path.join(__dirname, '..', 'models', 'weights.json');
 
-let weights = null;
-function loadWeights() {
-  if (!fs.existsSync(WEIGHTS_PATH)) {
-    throw new Error('No trained classifier found. Run `npm run train` first.');
+let model = null;
+function loadModel() {
+  if (!fs.existsSync(MODEL_PATH)) {
+    throw new Error('No trained model found. Run `npm run train` first.');
   }
-  weights = JSON.parse(fs.readFileSync(WEIGHTS_PATH, 'utf8'));
-  return weights;
+  model = JSON.parse(fs.readFileSync(MODEL_PATH, 'utf8'));
+  return model;
 }
 
-function sigmoid(z) {
-  return 1 / (1 + Math.exp(-z));
+function clamp01(x) {
+  return Math.max(0, Math.min(1, x));
 }
 
-/**
- * Score a set of recent request events. Returns a genuineness probability
- * (0..1) plus the raw features, so the caller (server.js / dashboard) can
- * show *why* the model decided what it decided.
- */
 function classify(events) {
-  if (!weights) loadWeights();
+  if (!model) loadModel();
   const f = extractFeatures(events);
-  const { w, b } = weights;
-  const z = w[0] * f.timingRegularity + w[1] * f.sourceDiversity + w[2] * f.endpointDiversity + b;
-  const genuineProbability = sigmoid(z);
+  const row = [f.timingRegularity, f.sourceDiversity, f.endpointDiversity];
+
+  const raw = anomalyScore(model.forest, row);
+  const lo = model.calibration.lo;
+  const hi = model.calibration.hi;
+  const normalizedAnomaly = clamp01((raw - lo) / (hi - lo));
+  const genuineProbability = 1 - normalizedAnomaly;
 
   let verdict = 'ambiguous';
   if (f.count < 5) verdict = 'monitoring';
@@ -35,10 +35,11 @@ function classify(events) {
   else if (genuineProbability <= 0.35) verdict = 'attack_detected';
 
   return {
-    genuineProbability,
-    verdict,
+    genuineProbability: genuineProbability,
+    verdict: verdict,
     features: f,
+    anomalyScore: raw,
   };
 }
 
-module.exports = { classify, loadWeights };
+module.exports = { classify, loadModel };

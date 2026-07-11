@@ -1,7 +1,7 @@
 {
   "name": "traffic-shield",
   "version": "1.0.0",
-  "description": "Distributed rate limiter with an AI-driven adaptive traffic classifier (token bucket + Redis + logistic regression classifier)",
+  "description": "Distributed rate limiter with an AI-driven adaptive traffic classifier (token bucket + Redis + isolation forest anomaly detector)",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {

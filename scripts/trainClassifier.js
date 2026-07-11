@@ -1,26 +1,8 @@
-/**
- * Trains a small logistic regression classifier that scores a traffic
- * window as "genuine" (label 1) vs "attack" (label 0), using the same 3
- * features computed live in src/features.js:
- *   x1 = timingRegularity, x2 = sourceDiversity, x3 = endpointDiversity
- *
- * There's no public labeled dataset for "flash sale vs bot attack" traffic,
- * so we generate synthetic feature vectors from the same generative
- * assumptions used in scripts/simulateTraffic.js (genuine traffic is
- * irregular/diverse, attack traffic is regular/concentrated), add noise,
- * and train on that. This is a legitimate and common approach when
- * bootstrapping a classifier before you have real production data --
- * document it as such if you present this project.
- *
- * Run: npm run train
- * Output: models/weights.json
- */
-
 const fs = require('fs');
 const path = require('path');
+const { buildForest, anomalyScore } = require('../src/isolationForest');
 
 function randn() {
-  // Box-Muller
   let u = 0, v = 0;
   while (u === 0) u = Math.random();
   while (v === 0) v = Math.random();
@@ -31,94 +13,102 @@ function clamp01(x) {
   return Math.max(0, Math.min(1, x));
 }
 
-function generateDataset(n) {
+function genuineSample() {
+  return [
+    clamp01(0.65 + randn() * 0.15),
+    clamp01(0.7 + randn() * 0.15),
+    clamp01(0.6 + randn() * 0.18),
+  ];
+}
+
+function attackSample() {
+  return [
+    clamp01(0.15 + randn() * 0.12),
+    clamp01(0.12 + randn() * 0.12),
+    clamp01(0.1 + randn() * 0.1),
+  ];
+}
+
+function generateLabeledSet(n) {
   const X = [];
   const y = [];
   for (let i = 0; i < n; i++) {
     const isGenuine = Math.random() < 0.5;
-    let timingRegularity, sourceDiversity, endpointDiversity;
-    if (isGenuine) {
-      timingRegularity = clamp01(0.65 + randn() * 0.15); // irregular clicks
-      sourceDiversity = clamp01(0.7 + randn() * 0.15); // many different users
-      endpointDiversity = clamp01(0.6 + randn() * 0.18); // browse many pages
-    } else {
-      timingRegularity = clamp01(0.15 + randn() * 0.12); // near-fixed intervals
-      sourceDiversity = clamp01(0.12 + randn() * 0.12); // few scripted sources
-      endpointDiversity = clamp01(0.1 + randn() * 0.1); // hammer one endpoint
-    }
-    X.push([timingRegularity, sourceDiversity, endpointDiversity]);
+    X.push(isGenuine ? genuineSample() : attackSample());
     y.push(isGenuine ? 1 : 0);
   }
-  return { X, y };
+  return { X: X, y: y };
 }
 
-function sigmoid(z) {
-  return 1 / (1 + Math.exp(-z));
+function percentile(sortedArr, p) {
+  const idx = clamp01(p) * (sortedArr.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sortedArr[lo];
+  return sortedArr[lo] + (sortedArr[hi] - sortedArr[lo]) * (idx - lo);
 }
 
-function trainLogisticRegression(X, y, { epochs = 2000, lr = 0.5 } = {}) {
-  let w = [0, 0, 0];
-  let b = 0;
-  const n = X.length;
-
-  for (let epoch = 0; epoch < epochs; epoch++) {
-    const gradW = [0, 0, 0];
-    let gradB = 0;
-
-    for (let i = 0; i < n; i++) {
-      const z = w[0] * X[i][0] + w[1] * X[i][1] + w[2] * X[i][2] + b;
-      const pred = sigmoid(z);
-      const error = pred - y[i];
-      gradW[0] += error * X[i][0];
-      gradW[1] += error * X[i][1];
-      gradW[2] += error * X[i][2];
-      gradB += error;
-    }
-
-    w[0] -= (lr * gradW[0]) / n;
-    w[1] -= (lr * gradW[1]) / n;
-    w[2] -= (lr * gradW[2]) / n;
-    b -= (lr * gradB) / n;
-  }
-
-  return { w, b };
+function calibrate(genuineScores, attackScores) {
+  const gSorted = genuineScores.slice().sort(function(a, b) { return a - b; });
+  const aSorted = attackScores.slice().sort(function(a, b) { return a - b; });
+  const lo = percentile(gSorted, 0.25);
+  const hi = percentile(aSorted, 0.75);
+  return { lo: lo, hi: Math.max(hi, lo + 1e-6) };
 }
 
-function evaluate(X, y, w, b) {
+function toGenuineProbability(rawScore, calibration) {
+  const normalized = clamp01((rawScore - calibration.lo) / (calibration.hi - calibration.lo));
+  return 1 - normalized;
+}
+
+function evaluate(forest, calibration, X, y) {
   let correct = 0;
   for (let i = 0; i < X.length; i++) {
-    const z = w[0] * X[i][0] + w[1] * X[i][1] + w[2] * X[i][2] + b;
-    const pred = sigmoid(z) >= 0.5 ? 1 : 0;
+    const raw = anomalyScore(forest, X[i]);
+    const genuineProbability = toGenuineProbability(raw, calibration);
+    const pred = genuineProbability >= 0.5 ? 1 : 0;
     if (pred === y[i]) correct += 1;
   }
   return correct / X.length;
 }
 
 function main() {
-  const train = generateDataset(4000);
-  const test = generateDataset(1000);
+  const trainGenuine = Array.from({ length: 3000 }, genuineSample);
+  const forest = buildForest(trainGenuine, { numTrees: 120, sampleSize: 256 });
 
-  const { w, b } = trainLogisticRegression(train.X, train.y);
-  const trainAcc = evaluate(train.X, train.y, w, b);
-  const testAcc = evaluate(test.X, test.y, w, b);
+  const calibrationSet = generateLabeledSet(1000);
+  const genuineCalibScores = calibrationSet.X
+    .filter(function(_, i) { return calibrationSet.y[i] === 1; })
+    .map(function(row) { return anomalyScore(forest, row); });
+  const attackCalibScores = calibrationSet.X
+    .filter(function(_, i) { return calibrationSet.y[i] === 0; })
+    .map(function(row) { return anomalyScore(forest, row); });
+  const calibration = calibrate(genuineCalibScores, attackCalibScores);
 
-  const weights = {
+  const testSet = generateLabeledSet(1000);
+  const testAcc = evaluate(forest, calibration, testSet.X, testSet.y);
+  const trainSetForAcc = generateLabeledSet(1000);
+  const trainAcc = evaluate(forest, calibration, trainSetForAcc.X, trainSetForAcc.y);
+
+  const model = {
+    type: 'isolation_forest',
     features: ['timingRegularity', 'sourceDiversity', 'endpointDiversity'],
-    w,
-    b,
+    forest: forest,
+    calibration: calibration,
     trainedAt: new Date().toISOString(),
     trainAccuracy: Number(trainAcc.toFixed(4)),
     testAccuracy: Number(testAcc.toFixed(4)),
-    note: 'Logistic regression trained on synthetic traffic features. See scripts/trainClassifier.js for the generative assumptions.',
+    note: 'Isolation forest trained ONLY on synthetic genuine-traffic feature vectors (no attack examples at train time). Labeled synthetic data was used solely to calibrate the raw anomaly score into a genuineProbability and to report accuracy above.',
   };
 
   const outPath = path.join(__dirname, '..', 'models', 'weights.json');
-  fs.writeFileSync(outPath, JSON.stringify(weights, null, 2));
+  fs.writeFileSync(outPath, JSON.stringify(model, null, 2));
 
-  console.log(`Trained logistic regression classifier`);
-  console.log(`  train accuracy: ${(trainAcc * 100).toFixed(2)}%`);
-  console.log(`  test accuracy:  ${(testAcc * 100).toFixed(2)}%`);
-  console.log(`  weights saved to ${outPath}`);
+  console.log('Trained isolation forest anomaly detector');
+  console.log('  trees: ' + forest.trees.length + ', sampleSize: ' + forest.sampleSize + ', maxDepth: ' + forest.maxDepth);
+  console.log('  train accuracy: ' + (trainAcc * 100).toFixed(2) + '%');
+  console.log('  test accuracy:  ' + (testAcc * 100).toFixed(2) + '%');
+  console.log('  model saved to ' + outPath);
 }
 
 main();
