@@ -4,6 +4,10 @@
 
 A server can't always tell a genuine flash-sale rush from a scripted attack just by counting requests. Traffic Shield rate-limits every source with a Redis-backed token bucket, then uses a trained classifier watching traffic shape (timing, source diversity, endpoint variety) to decide in real time whether to loosen the limits for a real surge or clamp down on a suspicious one.
 
+**🔴 Live Demo:** https://distributed-rate-limiter-l6y9.onrender.com  
+*(free tier — first load may take 30-60s to wake up)*
+
+
 This is a real, running system: an Express API, a Redis-backed distributed token bucket (atomic via a Lua script), an isolation forest anomaly detector trained on synthetic traffic, an adaptive policy loop, and a live dashboard.
 
 
