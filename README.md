@@ -9,38 +9,47 @@ This is a real, running system: an Express API, a Redis-backed distributed token
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    Client[HTTP request] --> MW[rateLimitMiddleware]
+```text
+                        Client
+                    (HTTP request)
+                          │
+                          ▼
+                ┌──────────────────────┐
+                │  rateLimitMiddleware  │
+                └──────────┬───────────┘
+                            │
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+  ┌───────────────────────┐   ┌─────────────────────────┐
+  │   Rate Limiting Layer   │   │ Traffic Classification   │
+  │                          │   │         Layer             │
+  │  rateLimiter.js          │   │  windowStore.js            │
+  │  (atomic Redis           │   │  (in-memory sliding         │
+  │   Lua script)            │   │   window)                   │
+  │        │                 │   │        │ every 500ms         │
+  │        ▼                 │   │        ▼                    │
+  │  ┌─────────────┐         │   │  classifier.js               │
+  │  │    Redis     │         │   │  + isolationForest.js         │
+  │  │ bucket:source│         │   │  (3 features)                  │
+  │  │    hash      │         │   │        │                      │
+  │  └──────────────┘         │   │        ▼                      │
+  │        │                 │   │  models/weights.json            │
+  │        ▼                 │   │  (trained model)                │
+  │  allow / block             │   └────────────┬───────────────────┘
+  └───────────┬───────────┘                    │ genuineProbability,
+              ▲                                │      verdict
+              │                                ▼
+              │                    ┌─────────────────────┐
+              └────loosen/tighten──│      adaptive.js      │
+                     buckets       │     policy engine       │
+                                   └─────────────────────┘
 
-    subgraph RL["Rate Limiting Layer"]
-        MW --> RLJS["rateLimiter.js<br/>atomic Redis Lua script"]
-        RLJS <--> Redis[("Redis<br/>bucket:source hash")]
-        RLJS --> Decision{allow / block}
-    end
-
-    subgraph CL["Traffic Classification Layer"]
-        MW --> WS["windowStore.js<br/>in-memory sliding window"]
-        WS -->|every 500ms| CJS["classifier.js<br/>isolation forest, 3 features"]
-        CJS <--> Model[("models/weights.json<br/>trained model")]
-    end
-
-    subgraph AP["Adaptive Policy Layer"]
-        CJS -->|genuineProbability, verdict| AD["adaptive.js<br/>policy engine"]
-        AD -->|loosen / tighten buckets| RLJS
-    end
-
-    Dash["public/index.html<br/>live dashboard"] -->|polls /api/state every 700ms| MW
-
-    classDef rl fill:#1f3a5f,stroke:#5b9bd5,color:#fff
-    classDef cl fill:#3a1f5f,stroke:#9b5bd5,color:#fff
-    classDef ap fill:#5f3a1f,stroke:#d59b5b,color:#fff
-    classDef client fill:#2a2a2a,stroke:#888,color:#fff
-
-    class MW,RLJS,Redis,Decision rl
-    class WS,CJS,Model cl
-    class AD ap
-    class Client,Dash client
+              public/index.html (live dashboard)
+                          │
+                 polls /api/state every 700ms
+                          │
+                          ▼
+                  rateLimitMiddleware
 ```
 
 ## How the pieces work
