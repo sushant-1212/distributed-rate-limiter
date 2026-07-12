@@ -11,16 +11,36 @@ This is a real, running system: an Express API, a Redis-backed distributed token
 
 ```mermaid
 flowchart TD
-    A[HTTP request] --> B[rateLimitMiddleware]
-    B --> C["rateLimiter.js<br/>atomic Redis Lua script"]
-    C <--> D[("Redis<br/>bucket:source hash")]
-    C --> E{allow / block}
-    B --> F["windowStore.js<br/>in-memory sliding window"]
-    F -->|every 500ms| G["classifier.js<br/>isolation forest, 3 features"]
-    G <--> H[("models/weights.json<br/>trained model")]
-    G -->|genuineProbability, verdict| I["adaptive.js<br/>policy engine"]
-    I -->|loosen / tighten buckets| C
-    J["public/index.html<br/>live dashboard"] -->|polls /api/state every 700ms| B
+    Client[HTTP request] --> MW[rateLimitMiddleware]
+
+    subgraph RL["Rate Limiting Layer"]
+        MW --> RLJS["rateLimiter.js<br/>atomic Redis Lua script"]
+        RLJS <--> Redis[("Redis<br/>bucket:source hash")]
+        RLJS --> Decision{allow / block}
+    end
+
+    subgraph CL["Traffic Classification Layer"]
+        MW --> WS["windowStore.js<br/>in-memory sliding window"]
+        WS -->|every 500ms| CJS["classifier.js<br/>isolation forest, 3 features"]
+        CJS <--> Model[("models/weights.json<br/>trained model")]
+    end
+
+    subgraph AP["Adaptive Policy Layer"]
+        CJS -->|genuineProbability, verdict| AD["adaptive.js<br/>policy engine"]
+        AD -->|loosen / tighten buckets| RLJS
+    end
+
+    Dash["public/index.html<br/>live dashboard"] -->|polls /api/state every 700ms| MW
+
+    classDef rl fill:#1f3a5f,stroke:#5b9bd5,color:#fff
+    classDef cl fill:#3a1f5f,stroke:#9b5bd5,color:#fff
+    classDef ap fill:#5f3a1f,stroke:#d59b5b,color:#fff
+    classDef client fill:#2a2a2a,stroke:#888,color:#fff
+
+    class MW,RLJS,Redis,Decision rl
+    class WS,CJS,Model cl
+    class AD ap
+    class Client,Dash client
 ```
 
 ## How the pieces work
