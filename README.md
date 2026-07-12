@@ -113,10 +113,4 @@ npm test
 - Add per-endpoint bucket costs (e.g. /checkout costs more tokens than /home) instead of a flat cost of 1.
 - Swap the IP/user-id header lookup for real auth-derived identity in production.
 
-## Resume line
 
-Built a distributed rate-limiting system (Redis, atomic Lua-script token buckets) with an unsupervised AI traffic classifier (isolation forest anomaly detection over timing/source/endpoint features, trained only on genuine traffic) that adaptively loosens or tightens limits in real time, reducing false-positive throttling under simulated flash-sale load while blocking 95%+ of simulated scripted attack traffic.
-
-## License
-
-MIT - use it, extend it, put it on your resume, push it to GitHub.
