@@ -6,6 +6,23 @@ A server can't always tell a genuine flash-sale rush from a scripted attack just
 
 This is a real, running system: an Express API, a Redis-backed distributed token bucket (atomic via a Lua script), an isolation forest anomaly detector trained on synthetic traffic, an adaptive policy loop, and a live dashboard.
 
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[HTTP request] --> B[rateLimitMiddleware]
+    B --> C["rateLimiter.js<br/>atomic Redis Lua script"]
+    C <--> D[("Redis<br/>bucket:source hash")]
+    C --> E{allow / block}
+    B --> F["windowStore.js<br/>in-memory sliding window"]
+    F -->|every 500ms| G["classifier.js<br/>isolation forest, 3 features"]
+    G <--> H[("models/weights.json<br/>trained model")]
+    G -->|genuineProbability, verdict| I["adaptive.js<br/>policy engine"]
+    I -->|loosen / tighten buckets| C
+    J["public/index.html<br/>live dashboard"] -->|polls /api/state every 700ms| B
+```
+
 ## How the pieces work
 
 **1. Token bucket (src/rateLimiter.js)**
