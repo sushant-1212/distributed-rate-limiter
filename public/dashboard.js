@@ -1,103 +1,70 @@
 (function () {
-  const needle = document.getElementById('needle');
-  const verdict = document.getElementById('verdict');
-  const scoreEl = document.getElementById('score');
-  const canvas = document.getElementById('chart');
+  const canvas = document.getElementById('trafficChart');
   const ctx = canvas.getContext('2d');
 
   let circuitBreakerOpen = false;
 
-  function setSignal(id, val01) {
-    const fill = document.getElementById(id);
-    const label = document.getElementById(id + '-val');
-    if (val01 === undefined || val01 === null) {
-      fill.style.width = '0%';
-      label.textContent = '—';
-      return;
-    }
-    const pct = Math.round(val01 * 100);
-    fill.style.width = pct + '%';
-    fill.style.background = pct >= 55 ? 'var(--genuine)' : 'var(--attack)';
-    label.textContent = pct + '%';
-  }
+  // Render High-Level KPI Cards
+  function renderMetrics(totals, history, data) {
+    document.getElementById('kpiTotal').textContent = (totals.total || 0).toLocaleString();
+    document.getElementById('kpiAllowed').textContent = (totals.allowed || 0).toLocaleString();
+    document.getElementById('kpiBlocked').textContent = (totals.blocked || 0).toLocaleString();
 
-  function renderGauge(classification) {
-    const p = classification ? classification.genuineProbability : 1.0;
-    const angle = -90 + p * 180;
-    needle.style.transform = `rotate(${angle}deg)`;
-    scoreEl.textContent = Math.round(p * 100) + '%';
+    const last = history[history.length - 1];
+    const rps = last ? last.allowed + last.blocked : 0;
+    document.getElementById('kpiRps').innerHTML = `${rps} <span style="font-size:13px; font-weight:400; color:var(--text-muted);">req/s</span>`;
 
-    const v = classification ? classification.verdict : 'monitoring';
-    const map = {
-      genuine_surge: ['GENUINE TRAFFIC', 'var(--genuine)'],
-      attack_detected: ['ATTACK DETECTED', 'var(--attack)'],
-      ambiguous: ['EVALUATING', 'var(--amber)'],
-      monitoring: ['MONITORING', 'var(--muted)'],
-    };
-    const [label, color] = map[v] || map.monitoring;
-    verdict.textContent = label;
-    verdict.style.color = color;
-    scoreEl.style.color = color;
-
-    setSignal('sig1', p);
-    setSignal('sig2', p);
-    setSignal('sig3', p);
-  }
-
-  function renderSystemState(data) {
-    if (data.circuitBreaker) {
-      circuitBreakerOpen = data.circuitBreaker.isOpen;
-      const cbBadge = document.getElementById('cb-badge');
-      const btnCb = document.getElementById('btn-cb-toggle');
-      if (circuitBreakerOpen) {
-        cbBadge.textContent = 'OPEN (FALLBACK)';
-        cbBadge.className = 'badge badge-danger';
-        btnCb.textContent = 'Reset Circuit Breaker';
-      } else {
-        cbBadge.textContent = 'CLOSED (NORMAL)';
-        cbBadge.className = 'badge badge-healthy';
-        btnCb.textContent = 'Trip Circuit Breaker';
-      }
+    if (data.hierarchicalL1) {
+      document.getElementById('kpiL1Rate').textContent = `${data.hierarchicalL1.l1HitRatePercent || '0.0'}%`;
     }
 
     if (data.concurrency) {
-      document.getElementById('concurrency-stat').textContent = `${data.concurrency.inFlight} / ${data.concurrency.currentLimit}`;
+      document.getElementById('kpiConcurrency').textContent = `${data.concurrency.inFlight} / ${data.concurrency.currentLimit}`;
     }
 
+    // Top Navigation indicators
     if (data.redis) {
-      document.getElementById('redis-status').textContent = data.redis.connected ? 'Connected' : 'Mock/Offline';
+      const isConnected = data.redis.connected;
+      const dot = document.getElementById('redisDot');
+      dot.className = isConnected ? 'pulse-dot' : 'pulse-dot danger';
+      document.getElementById('redisLabel').textContent = isConnected ? 'Redis: Connected' : 'Redis: Offline';
     }
 
-    if (data.hierarchicalL1) {
-      document.getElementById('l1-hit-rate').textContent = (data.hierarchicalL1.l1HitRatePercent || 0) + '%';
-    }
-
-    if (data.anomalyDetection) {
-      document.getElementById('entropy-score').textContent = (data.anomalyDetection.normalizedEntropy || 1.0).toFixed(2);
-    }
-
-    if (data.adaptive) {
-      document.getElementById('adaptive-mode').textContent = data.adaptive.mode || 'normal';
-    }
-
-    if (data.classification) {
-      renderGauge(data.classification);
+    if (data.circuitBreaker) {
+      circuitBreakerOpen = data.circuitBreaker.isOpen;
+      const dot = document.getElementById('circuitDot');
+      const label = document.getElementById('circuitLabel');
+      const btn = document.getElementById('btnCircuit');
+      if (circuitBreakerOpen) {
+        dot.className = 'pulse-dot danger';
+        label.textContent = 'Circuit: Degraded (Open)';
+        btn.textContent = 'Reset Circuit Breaker';
+      } else {
+        dot.className = 'pulse-dot';
+        label.textContent = 'Circuit: Closed';
+        btn.textContent = 'Simulate Redis Outage';
+      }
     }
   }
 
-  function renderMetrics(totals, history) {
-    document.getElementById('m-total').textContent = totals.total;
-    document.getElementById('m-allowed').textContent = totals.allowed;
-    document.getElementById('m-blocked').textContent = totals.blocked;
-    const last = history[history.length - 1];
-    document.getElementById('m-rps').textContent = last ? last.allowed + last.blocked : 0;
-  }
-
+  // Render Clean Time-Series Canvas Chart
   function renderChart(history) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const pad = 24;
-    const w = canvas.width - pad * 2;
-    const h = canvas.height - pad * 2;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = 200 * dpr;
+    ctx.scale(dpr, dpr);
+
+    const w = rect.width;
+    const h = 200;
+    const padTop = 15;
+    const padBottom = 25;
+    const padLeft = 35;
+    const padRight = 15;
+    const plotW = w - padLeft - padRight;
+    const plotH = h - padTop - padBottom;
+
+    ctx.clearRect(0, 0, w, h);
 
     let maxRps = 10;
     for (const d of history) {
@@ -106,131 +73,190 @@
     }
     maxRps = Math.ceil(maxRps / 5) * 5;
 
-    // Grid lines
-    ctx.strokeStyle = '#1a2744';
+    // Horizontal Grid Lines & Y-Axis Labels
+    ctx.strokeStyle = '#1a1f2c';
     ctx.lineWidth = 1;
+    ctx.fillStyle = '#5d6778';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+
     for (let i = 0; i <= 4; i++) {
-      const y = pad + (h / 4) * i;
+      const yVal = Math.round((maxRps / 4) * i);
+      const yPos = padTop + plotH - (plotH / 4) * i;
       ctx.beginPath();
-      ctx.moveTo(pad, y);
-      ctx.lineTo(pad + w, y);
+      ctx.moveTo(padLeft, yPos);
+      ctx.lineTo(w - padRight, yPos);
       ctx.stroke();
+      ctx.fillText(yVal.toString(), padLeft - 8, yPos + 3);
     }
 
     if (history.length < 2) return;
-    const step = w / (Math.max(history.length - 1, 1));
+    const step = plotW / (Math.max(history.length - 1, 1));
 
-    // Allowed (green line)
-    ctx.strokeStyle = '#3DDC84';
-    ctx.lineWidth = 2.5;
+    // Draw Allowed Area & Line (Emerald)
     ctx.beginPath();
     history.forEach((d, i) => {
-      const x = pad + i * step;
-      const y = pad + h - (d.allowed / maxRps) * h;
+      const x = padLeft + i * step;
+      const y = padTop + plotH - (d.allowed / maxRps) * plotH;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Blocked (red line)
-    ctx.strokeStyle = '#FF5A5F';
-    ctx.lineWidth = 2.5;
+    // Subtle Area Fill for Allowed
+    ctx.lineTo(padLeft + (history.length - 1) * step, padTop + plotH);
+    ctx.lineTo(padLeft, padTop + plotH);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.06)';
+    ctx.fill();
+
+    // Draw Blocked Line (Crimson)
     ctx.beginPath();
     history.forEach((d, i) => {
-      const x = pad + i * step;
-      const y = pad + h - (d.blocked / maxRps) * h;
+      const x = padLeft + i * step;
+      const y = padTop + plotH - (d.blocked / maxRps) * plotH;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
+    ctx.strokeStyle = '#f43f5e';
+    ctx.lineWidth = 2;
     ctx.stroke();
   }
 
-  function renderLogs(logs) {
-    const tbody = document.getElementById('log-body');
+  // Render Real-Time Audit Stream Table
+  function renderAuditLogs(logs) {
+    const tbody = document.getElementById('auditTableBody');
+    if (!logs || logs.length === 0) return;
+
     tbody.innerHTML = '';
     logs.slice(0, 15).forEach((l) => {
       const tr = document.createElement('tr');
-      const badge = l.allowed
-        ? '<span style="color:var(--genuine)">✓ 200 ALLOWED</span>'
-        : '<span style="color:var(--attack)">✗ 429 THROTTLED</span>';
+      const isAllowed = l.allowed;
+      const statusBadge = isAllowed
+        ? '<span class="badge badge-200">200 OK</span>'
+        : '<span class="badge badge-429">429 THROTTLED</span>';
+
       tr.innerHTML = `
         <td>${l.time || '—'}</td>
+        <td style="color:#fff; font-weight:500;">${l.endpoint}</td>
         <td><code>${l.sourceId || 'anonymous'}</code></td>
-        <td>${l.endpoint}</td>
         <td>${l.cost || 1}</td>
-        <td><span class="badge badge-warn">${l.tier || 'free'}</span></td>
+        <td><span class="badge badge-tier">${l.tier || 'free'}</span></td>
         <td>${l.latencyMs || 0}ms</td>
-        <td>${badge}</td>
+        <td>${statusBadge}</td>
       `;
       tbody.appendChild(tr);
     });
   }
 
-  function renderBuckets(buckets) {
-    const container = document.getElementById('buckets');
-    container.innerHTML = '';
-    buckets.forEach((b) => {
-      const el = document.createElement('div');
-      el.className = 'bucket' + (b.throttled ? ' throttled' : '');
-      const pct = Math.min(100, Math.round((b.tokens / b.capacity) * 100));
-      const fillCol = b.throttled ? 'var(--attack)' : pct > 30 ? 'var(--genuine)' : 'var(--amber)';
-      el.innerHTML = `
-        <div class="id" title="${b.sourceId}">${b.sourceId}</div>
-        <div class="bar"><div class="bar-fill" style="width:${pct}%; background:${fillCol}"></div></div>
-        <div class="lvl">${Math.round(b.tokens)} / ${b.capacity}</div>
-      `;
-      container.appendChild(el);
-    });
-  }
-
+  // Poll server state every 750ms
   async function refresh() {
     try {
-      const [stateRes, histRes, logsRes, buckRes] = await Promise.all([
+      const [stateRes, histRes, logsRes] = await Promise.all([
         fetch('/api/state').then((r) => r.json()),
         fetch('/api/history').then((r) => r.json()),
         fetch('/api/logs').then((r) => r.json()),
-        fetch('/api/buckets').then((r) => r.json()),
       ]);
 
-      renderSystemState(stateRes);
-      renderMetrics(stateRes.totals || { total: 0, allowed: 0, blocked: 0 }, histRes);
+      renderMetrics(stateRes.totals || {}, histRes, stateRes);
       renderChart(histRes);
-      renderLogs(logsRes);
-      renderBuckets(buckRes);
+      renderAuditLogs(logsRes);
     } catch {
-      // transient poll error
+      // server poll retry
     }
   }
 
-  setInterval(refresh, 600);
+  setInterval(refresh, 750);
   refresh();
 
-  // Global actions for interactive buttons
-  window.sendReq = async function (endpoint, apiKey) {
+  // Helper to update Response Inspector Box
+  function updateInspector(status, statusText, latencyMs, headers) {
+    const statusEl = document.getElementById('inspectStatus');
+    const latencyEl = document.getElementById('inspectLatency');
+    const headersEl = document.getElementById('inspectHeaders');
+
+    const isSuccess = status >= 200 && status < 300;
+    statusEl.textContent = `${status} ${statusText}`;
+    statusEl.style.color = isSuccess ? 'var(--emerald)' : 'var(--crimson)';
+    latencyEl.textContent = `${latencyMs.toFixed(1)} ms`;
+
+    let html = '';
+    const relevantHeaders = [
+      'ratelimit-remaining',
+      'ratelimit-reset',
+      'ratelimit-limit',
+      'ratelimit-policy',
+      'x-ratelimit-source',
+      'x-ratelimit-tier',
+      'retry-after',
+    ];
+
+    relevantHeaders.forEach((h) => {
+      const val = headers.get(h);
+      if (val !== null) {
+        html += `<div><span class="inspector-key">${h}: </span><span class="inspector-val">${val}</span></div>`;
+      }
+    });
+
+    if (!html) {
+      html = `<div><span class="inspector-key">Status: </span><span>Completed</span></div>`;
+    }
+
+    headersEl.innerHTML = html;
+  }
+
+  // Interactive Sandbox Handlers
+  window.onPresetChange = function () {};
+
+  window.dispatchSelectedPreset = async function () {
+    const preset = document.getElementById('endpointPreset').value;
+    const start = performance.now();
+
     try {
-      await fetch(endpoint, {
-        headers: { 'x-api-key': apiKey },
-      });
+      if (preset === 'pow') {
+        await solvePoWChallenge();
+        return;
+      }
+
+      let endpoint = '/api/v1/products';
+      let method = 'GET';
+      let headers = {};
+
+      if (preset === 'free') {
+        endpoint = '/api/v1/products';
+        headers['x-api-key'] = 'key-demo-free';
+      } else if (preset === 'pro') {
+        endpoint = '/api/v1/search?q=database';
+        headers['x-api-key'] = 'key-demo-pro';
+      } else if (preset === 'enterprise') {
+        endpoint = '/api/v1/checkout';
+        method = 'POST';
+        headers['x-api-key'] = 'key-demo-ent';
+      } else if (preset === 'ai') {
+        endpoint = '/api/v1/ai-generate';
+        method = 'POST';
+        headers['x-user-id'] = 'heavy-ai-client';
+      } else if (preset === 'webhook') {
+        endpoint = '/api/v1/webhooks/orders';
+        method = 'POST';
+        headers['content-type'] = 'application/json';
+        headers['x-throttle-policy'] = 'queue';
+      }
+
+      const res = await fetch(endpoint, { method, headers });
+      const latency = performance.now() - start;
+      updateInspector(res.status, res.statusText, latency, res.headers);
       refresh();
-    } catch {}
+    } catch (err) {
+      const latency = performance.now() - start;
+      updateInspector(0, 'Network Error', latency, new Headers());
+    }
   };
 
-  window.sendWebhookQueue = async function () {
-    try {
-      await fetch('/api/v1/webhooks/orders', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-throttle-policy': 'queue',
-          'x-user-id': 'webhook-client-99',
-        },
-        body: JSON.stringify({ event: 'order.created', amount: 499 }),
-      });
-      refresh();
-    } catch {}
-  };
-
-  window.solvePoWAndBypass = async function () {
+  async function solvePoWChallenge() {
+    const start = performance.now();
     try {
       const challengeRes = await fetch('/api/v1/challenge').then((r) => r.json());
       if (!challengeRes.challenge) return;
@@ -249,24 +275,30 @@
       }
 
       const solution = `${nonce}:${suffix}:${timestamp}:${difficulty}:${signature}`;
-      await fetch('/api/v1/ai-generate', {
+      const res = await fetch('/api/v1/ai-generate', {
+        method: 'POST',
         headers: {
           'x-pow-solution': solution,
-          'x-user-id': 'pow-verified-user',
+          'x-user-id': 'pow-verified-client',
         },
       });
-      refresh();
-    } catch (e) {
-      console.error('PoW solve error:', e);
-    }
-  };
 
-  window.sendBurst = async function () {
+      const latency = performance.now() - start;
+      updateInspector(res.status, `${res.statusText} (PoW Solved in ${suffix} hashes)`, latency, res.headers);
+      refresh();
+    } catch (err) {
+      const latency = performance.now() - start;
+      updateInspector(0, 'PoW Execution Error', latency, new Headers());
+    }
+  }
+
+  window.dispatchBurst = async function () {
     const promises = [];
     for (let i = 0; i < 20; i++) {
       promises.push(
         fetch('/api/v1/ai-generate', {
-          headers: { 'x-user-id': 'burst-tester' },
+          method: 'POST',
+          headers: { 'x-user-id': 'burst-client' },
         })
       );
     }
@@ -280,7 +312,7 @@
     refresh();
   };
 
-  window.resetStats = async function () {
+  window.resetTelemetry = async function () {
     await fetch('/api/reset', { method: 'POST' });
     refresh();
   };
