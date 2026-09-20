@@ -6,51 +6,64 @@
 
   // Render High-Level KPI Cards
   function renderMetrics(totals, history, data) {
-    document.getElementById('kpiTotal').textContent = (totals.total || 0).toLocaleString();
-    document.getElementById('kpiAllowed').textContent = (totals.allowed || 0).toLocaleString();
-    document.getElementById('kpiBlocked').textContent = (totals.blocked || 0).toLocaleString();
+    const elTotal = document.getElementById('kpiTotal');
+    const elAllowed = document.getElementById('kpiAllowed');
+    const elBlocked = document.getElementById('kpiBlocked');
+    const elRps = document.getElementById('kpiRps');
 
-    const last = history[history.length - 1];
-    const rps = last ? last.allowed + last.blocked : 0;
-    document.getElementById('kpiRps').innerHTML = `${rps} <span style="font-size:13px; font-weight:400; color:var(--text-muted);">req/s</span>`;
+    if (elTotal) elTotal.textContent = (totals.total || 0).toLocaleString();
+    if (elAllowed) elAllowed.textContent = (totals.allowed || 0).toLocaleString();
+    if (elBlocked) elBlocked.textContent = (totals.blocked || 0).toLocaleString();
 
-    if (data.hierarchicalL1) {
+    // Calculate real-time throughput from the current / most recent seconds
+    const nowSec = Math.floor(Date.now() / 1000);
+    const recentBins = Array.isArray(history) ? history.filter(b => b && b.sec >= nowSec - 2) : [];
+    const recentSum = recentBins.reduce((acc, b) => acc + (b.allowed || 0) + (b.blocked || 0), 0);
+    const rps = recentBins.length > 0 ? Math.round(recentSum / recentBins.length) : 0;
+    if (elRps) {
+      elRps.innerHTML = `${rps} <span style="font-size:13px; font-weight:400; color:var(--text-muted);">req/s</span>`;
+    }
+
+    if (data.hierarchicalL1 && document.getElementById('kpiL1Rate')) {
       document.getElementById('kpiL1Rate').textContent = `${data.hierarchicalL1.l1HitRatePercent || '0.0'}%`;
     }
 
-    if (data.concurrency) {
-      document.getElementById('kpiConcurrency').textContent = `${data.concurrency.inFlight} / ${data.concurrency.currentLimit}`;
+    if (data.concurrency && document.getElementById('kpiConcurrency')) {
+      document.getElementById('kpiConcurrency').textContent = `${data.concurrency.inFlight || 0} / ${data.concurrency.currentLimit || 25}`;
     }
 
     // Top Navigation indicators
-    if (data.redis) {
+    if (data.redis && document.getElementById('redisDot')) {
       const isConnected = data.redis.connected;
       const dot = document.getElementById('redisDot');
       dot.className = isConnected ? 'pulse-dot' : 'pulse-dot danger';
-      document.getElementById('redisLabel').textContent = isConnected ? 'Redis: Connected' : 'Redis: Offline';
+      const label = document.getElementById('redisLabel');
+      if (label) label.textContent = isConnected ? 'Redis: Connected' : 'Redis: Offline';
     }
 
-    if (data.circuitBreaker) {
+    if (data.circuitBreaker && document.getElementById('circuitDot')) {
       circuitBreakerOpen = data.circuitBreaker.isOpen;
       const dot = document.getElementById('circuitDot');
       const label = document.getElementById('circuitLabel');
       const btn = document.getElementById('btnCircuit');
       if (circuitBreakerOpen) {
-        dot.className = 'pulse-dot danger';
-        label.textContent = 'Circuit: Degraded (Open)';
-        btn.textContent = 'Reset Circuit Breaker';
+        if (dot) dot.className = 'pulse-dot danger';
+        if (label) label.textContent = 'Circuit: Degraded (Open)';
+        if (btn) btn.textContent = 'Reset Circuit Breaker';
       } else {
-        dot.className = 'pulse-dot';
-        label.textContent = 'Circuit: Closed';
-        btn.textContent = 'Simulate Redis Outage';
+        if (dot) dot.className = 'pulse-dot';
+        if (label) label.textContent = 'Circuit: Closed';
+        if (btn) btn.textContent = 'Simulate Redis Outage';
       }
     }
   }
 
-  // Render Clean Time-Series Canvas Chart
+  // Render Real-Time 30-Second Sliding Window Canvas Chart
   function renderChart(history) {
+    if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
+    if (!rect.width) return;
     canvas.width = rect.width * dpr;
     canvas.height = 200 * dpr;
     ctx.scale(dpr, dpr);
@@ -66,10 +79,24 @@
 
     ctx.clearRect(0, 0, w, h);
 
+    // Build rolling 30-second window anchored to current real time
+    const nowSec = Math.floor(Date.now() / 1000);
+    const histMap = new Map();
+    if (Array.isArray(history)) {
+      for (const b of history) {
+        if (b && b.sec) histMap.set(b.sec, b);
+      }
+    }
+
+    const windowSlots = [];
     let maxRps = 10;
-    for (const d of history) {
-      const tot = d.allowed + d.blocked;
-      if (tot > maxRps) maxRps = tot;
+    for (let s = nowSec - 29; s <= nowSec; s++) {
+      const existing = histMap.get(s);
+      const allowed = existing ? (existing.allowed || 0) : 0;
+      const blocked = existing ? (existing.blocked || 0) : 0;
+      const total = allowed + blocked;
+      if (total > maxRps) maxRps = total;
+      windowSlots.push({ sec: s, allowed, blocked, total });
     }
     maxRps = Math.ceil(maxRps / 5) * 5;
 
@@ -90,12 +117,11 @@
       ctx.fillText(yVal.toString(), padLeft - 8, yPos + 3);
     }
 
-    if (history.length < 2) return;
-    const step = plotW / (Math.max(history.length - 1, 1));
+    const step = plotW / (windowSlots.length - 1);
 
     // Draw Allowed Area & Line (Emerald)
     ctx.beginPath();
-    history.forEach((d, i) => {
+    windowSlots.forEach((d, i) => {
       const x = padLeft + i * step;
       const y = padTop + plotH - (d.allowed / maxRps) * plotH;
       if (i === 0) ctx.moveTo(x, y);
@@ -106,15 +132,15 @@
     ctx.stroke();
 
     // Subtle Area Fill for Allowed
-    ctx.lineTo(padLeft + (history.length - 1) * step, padTop + plotH);
+    ctx.lineTo(padLeft + (windowSlots.length - 1) * step, padTop + plotH);
     ctx.lineTo(padLeft, padTop + plotH);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(16, 185, 129, 0.06)';
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
     ctx.fill();
 
     // Draw Blocked Line (Crimson)
     ctx.beginPath();
-    history.forEach((d, i) => {
+    windowSlots.forEach((d, i) => {
       const x = padLeft + i * step;
       const y = padTop + plotH - (d.blocked / maxRps) * plotH;
       if (i === 0) ctx.moveTo(x, y);
@@ -128,7 +154,7 @@
   // Render Real-Time Audit Stream Table
   function renderAuditLogs(logs) {
     const tbody = document.getElementById('auditTableBody');
-    if (!logs || logs.length === 0) return;
+    if (!tbody || !logs || logs.length === 0) return;
 
     tbody.innerHTML = '';
     logs.slice(0, 15).forEach((l) => {
@@ -140,7 +166,7 @@
 
       tr.innerHTML = `
         <td>${l.time || '—'}</td>
-        <td style="color:#fff; font-weight:500;">${l.endpoint}</td>
+        <td style="color:#fff; font-weight:500;">${l.endpoint || '/'}</td>
         <td><code>${l.sourceId || 'anonymous'}</code></td>
         <td>${l.cost || 1}</td>
         <td><span class="badge badge-tier">${l.tier || 'free'}</span></td>
@@ -151,7 +177,7 @@
     });
   }
 
-  // Poll server state every 750ms
+  // Poll server state every 600ms
   async function refresh() {
     try {
       const [stateRes, histRes, logsRes] = await Promise.all([
@@ -163,12 +189,17 @@
       renderMetrics(stateRes.totals || {}, histRes, stateRes);
       renderChart(histRes);
       renderAuditLogs(logsRes);
-    } catch {
-      // server poll retry
+
+      const statusEl = document.getElementById('trafficStatus');
+      if (statusEl) {
+        statusEl.textContent = `Streaming (${stateRes.totals ? stateRes.totals.total : 0} total events)`;
+      }
+    } catch (err) {
+      console.warn('[TrafficShield] State poll error:', err);
     }
   }
 
-  setInterval(refresh, 750);
+  setInterval(refresh, 600);
   refresh();
 
   // Helper to update Response Inspector Box

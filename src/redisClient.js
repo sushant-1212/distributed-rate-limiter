@@ -5,7 +5,11 @@ let client;
 let isConnected = false;
 
 function createClient() {
-  if (process.env.USE_MOCK_REDIS === 'true') {
+  if (
+    process.env.USE_MOCK_REDIS === 'true' ||
+    process.env.NODE_ENV === 'test' ||
+    (!process.env.REDIS_URL && process.env.USE_REAL_REDIS !== 'true')
+  ) {
     const RedisMock = require('ioredis-mock');
     const mock = new RedisMock();
     isConnected = true;

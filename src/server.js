@@ -14,7 +14,15 @@ const redis = require('./redisClient');
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.static(path.join(__dirname, '..', 'public'), {
+  etag: false,
+  maxAge: 0,
+  setHeaders: (res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+  },
+}));
 
 // ---- Rolling Request Telemetry for Dashboard ----------------------------
 const recentLogs = []; // { time, sourceId, endpoint, allowed, tier, cost, latencyMs }
