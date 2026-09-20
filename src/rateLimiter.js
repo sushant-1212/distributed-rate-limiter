@@ -1,99 +1,162 @@
+/**
+ * Unified Rate Limiting Engine.
+ *
+ * Coordinates:
+ *  - Multi-Tenant Policy Engine
+ *  - Hierarchical Two-Tier Limiter (L1 Cache + L2 Redis Lease)
+ *  - Pluggable Algorithms (GCRA, Sliding Window Counter, Token Bucket)
+ *  - Circuit Breaker with Local Fallback
+ *  - Decoupled Redis Streams Telemetry & Prometheus Metrics
+ */
+
 const redis = require('./redisClient');
+const policyEngine = require('./core/policyEngine');
+const circuitBreaker = require('./core/circuitBreaker');
+const HierarchicalLimiter = require('./core/hierarchicalLimiter');
+const { checkRateLimit, ALGORITHMS } = require('./algorithms');
+const streamEmitter = require('./telemetry/streamEmitter');
+const anomalyDetector = require('./worker/anomalyDetector');
+const {
+  requestCounter,
+  latencyHistogram,
+  l1HitsCounter,
+  circuitBreakerStateGauge,
+} = require('./telemetry/metrics');
+
+const hierarchicalLimiter = new HierarchicalLimiter(redis, {
+  defaultBatchSize: 15,
+  leaseTtlMs: 2500,
+});
 
 /**
- * Atomic token-bucket check-and-consume, executed inside Redis itself via a
- * Lua script (EVAL). Doing the read-modify-write as a single Lua script is
- * what makes this safe under concurrent requests hitting multiple app
- * server instances at once ("distributed" rate limiting) -- there is no
- * read-then-write race between Node processes because Redis executes the
- * whole script atomically.
- *
- * Bucket state per source is stored as a Redis hash: { tokens, timestamp }.
- *
- * KEYS[1]  bucket key, e.g. "bucket:1.2.3.4"
- * ARGV[1]  capacity (max tokens the bucket can hold)
- * ARGV[2]  refill rate (tokens added per second)
- * ARGV[3]  now (ms, epoch)
- * ARGV[4]  cost of this request in tokens (usually 1)
+ * Check rate limit for an incoming request.
+ * @param {object} req - Express request
+ * @param {object} optionsOverride - optional overrides
  */
-const TOKEN_BUCKET_SCRIPT = `
-local key        = KEYS[1]
-local capacity   = tonumber(ARGV[1])
-local refillRate = tonumber(ARGV[2])
-local now        = tonumber(ARGV[3])
-local cost       = tonumber(ARGV[4])
+async function checkLimit(req, optionsOverride = {}) {
+  const startTime = process.hrtime.bigint();
+  const policy = policyEngine.resolveRequest(req);
+  const sourceId = policy.tenantId;
 
-local bucket = redis.call('HMGET', key, 'tokens', 'timestamp')
-local tokens = tonumber(bucket[1])
-local timestamp = tonumber(bucket[2])
-
-if tokens == nil then
-  tokens = capacity
-  timestamp = now
-end
-
-local elapsedSeconds = math.max(0, (now - timestamp) / 1000)
-tokens = math.min(capacity, tokens + elapsedSeconds * refillRate)
-
-local allowed = 0
-if tokens >= cost then
-  tokens = tokens - cost
-  allowed = 1
-end
-
-redis.call('HMSET', key, 'tokens', tokens, 'timestamp', now)
-redis.call('EXPIRE', key, 3600)
-
-return { allowed, tostring(tokens) }
-`;
-
-let scriptSha = null;
-
-async function loadScript() {
-  if (!scriptSha) {
-    scriptSha = await redis.script('LOAD', TOKEN_BUCKET_SCRIPT);
+  // 1. Blacklist Check
+  if (policy.isBlacklisted) {
+    return {
+      allowed: false,
+      remaining: 0,
+      resetMs: 3600000,
+      retryAfterMs: 3600,
+      tier: policy.tierName,
+      policy,
+      reason: 'blacklisted',
+    };
   }
-  return scriptSha;
-}
 
-/**
- * Check (and consume, if allowed) one request against a source's bucket.
- * @param {string} sourceId  identifier for the caller (IP, user id, API key...)
- * @param {object} opts      { capacity, refillRate, cost }
- * @returns {Promise<{allowed: boolean, tokensLeft: number}>}
- */
-async function checkLimit(sourceId, opts = {}) {
-  const capacity = opts.capacity ?? Number(process.env.DEFAULT_CAPACITY || 10);
-  const refillRate = opts.refillRate ?? Number(process.env.DEFAULT_REFILL_RATE || 2);
-  const cost = opts.cost ?? 1;
-  const key = `bucket:${sourceId}`;
-  const now = Date.now();
+  // 2. Circuit Breaker Check (if Redis is down or experiencing failures)
+  if (circuitBreaker.isOpen()) {
+    circuitBreakerStateGauge.set(2);
+    const fallback = circuitBreaker.fallbackCheck(sourceId, policy.cost);
+    recordMetricsAndTelemetry(sourceId, policy, fallback, startTime);
+    return { ...fallback, tier: policy.tierName, policy };
+  }
 
-  const sha = await loadScript();
   let result;
+  const useHierarchical = optionsOverride.useHierarchical ?? (policy.tierName === 'pro' || policy.tierName === 'enterprise');
+
   try {
-    result = await redis.evalsha(sha, 1, key, capacity, refillRate, now, cost);
-  } catch (err) {
-    // Script cache can be flushed by an admin (SCRIPT FLUSH); reload once.
-    if (String(err.message).includes('NOSCRIPT')) {
-      scriptSha = null;
-      const freshSha = await loadScript();
-      result = await redis.evalsha(freshSha, 1, key, capacity, refillRate, now, cost);
+    if (useHierarchical) {
+      // High-throughput two-tier path (L1 Memory Lease + L2 Redis)
+      result = await hierarchicalLimiter.check(sourceId, {
+        cost: policy.cost,
+        capacity: policy.capacity,
+        refillRate: policy.refillRate,
+        batchSize: policy.tierName === 'enterprise' ? 50 : 20,
+      });
+
+      if (result.source === 'L1_MEMORY') {
+        l1HitsCounter.inc();
+      }
     } else {
-      throw err;
+      // Pluggable algorithm check (GCRA / Token Bucket / Sliding Window)
+      const algorithm = optionsOverride.algorithm || (optionsOverride.capacity ? ALGORITHMS.TOKEN_BUCKET : (policy.algorithm || ALGORITHMS.GCRA));
+      const capacity = optionsOverride.capacity ?? policy.capacity;
+      const refillRate = optionsOverride.refillRate ?? policy.refillRate;
+      const cost = optionsOverride.cost ?? policy.cost;
+      const limit = optionsOverride.limit ?? policy.limit;
+      const periodMs = optionsOverride.periodMs ?? policy.periodMs;
+
+      const algoResult = await checkRateLimit(algorithm, redis, sourceId, {
+        limit,
+        periodMs,
+        capacity,
+        refillRate,
+        cost,
+      });
+
+      result = {
+        ...algoResult,
+        source: `L2_REDIS_${algorithm.toUpperCase()}`,
+      };
     }
+
+    circuitBreaker.recordSuccess();
+    circuitBreakerStateGauge.set(0);
+  } catch (err) {
+    console.error(`[RateLimiter] Error during limit check: ${err.message}`);
+    circuitBreaker.recordFailure(err);
+    circuitBreakerStateGauge.set(1);
+
+    // Fall back locally without crashing or completely opening gates
+    result = circuitBreaker.fallbackCheck(sourceId, policy.cost);
   }
 
-  const [allowed, tokensLeft] = result;
-  return { allowed: allowed === 1, tokensLeft: parseFloat(tokensLeft) };
+  recordMetricsAndTelemetry(sourceId, policy, result, startTime);
+
+  return {
+    ...result,
+    tier: policy.tierName,
+    policy,
+  };
 }
 
-/** Read current bucket state without consuming a token (for dashboards). */
-async function peekBucket(sourceId) {
-  const key = `bucket:${sourceId}`;
-  const bucket = await redis.hmget(key, 'tokens', 'timestamp');
-  if (bucket[0] === null) return null;
-  return { tokens: parseFloat(bucket[0]), timestamp: parseInt(bucket[1], 10) };
+function recordMetricsAndTelemetry(sourceId, policy, result, startTime) {
+  const endTime = process.hrtime.bigint();
+  const latencyMs = Number(endTime - startTime) / 1000000;
+
+  // Prometheus Metrics
+  requestCounter.inc({
+    tier: policy.tierName,
+    algorithm: policy.algorithm,
+    status: result.allowed ? 'allowed' : 'blocked',
+    route: policy.path || '/',
+  });
+
+  latencyHistogram.observe(
+    {
+      tier: policy.tierName,
+      algorithm: policy.algorithm,
+      source: result.source || 'UNKNOWN',
+    },
+    latencyMs
+  );
+
+  // Asynchronous Decoupled Telemetry (Redis Streams + Local Ring)
+  const auditRecord = {
+    timestamp: Date.now(),
+    sourceId,
+    tier: policy.tierName,
+    cost: policy.cost,
+    allowed: result.allowed,
+    latencyMs: Number(latencyMs.toFixed(3)),
+  };
+
+  streamEmitter.emit(auditRecord);
+  anomalyDetector.recordLocalEvent(auditRecord);
 }
 
-module.exports = { checkLimit, peekBucket };
+module.exports = {
+  checkLimit,
+  hierarchicalLimiter,
+  policyEngine,
+  circuitBreaker,
+  anomalyDetector,
+};
