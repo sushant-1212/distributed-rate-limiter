@@ -6,18 +6,26 @@
  *  - Rate-limiting quota exhaustion (429 Too Many Requests)
  *  - Dynamic L1/L2 cache leasing movements on the live dashboard.
  *
- * Usage:
- *   node scripts/simulateTraffic.js [mode] [durationSeconds] [targetUrl]
- *
- * Examples:
- *   node scripts/simulateTraffic.js mixed 30
- *   node scripts/simulateTraffic.js attack 20 https://your-app.onrender.com
+ * Flexible usage (any argument order):
+ *   node scripts/simulateTraffic.js
+ *   node scripts/simulateTraffic.js https://your-app.onrender.com
+ *   node scripts/simulateTraffic.js mixed 30 https://your-app.onrender.com
  */
 
-const targetUrlArg = process.argv[4] || process.env.BASE_URL || 'http://localhost:3000';
-const BASE_URL = targetUrlArg.replace(/\/$/, '');
-const mode = process.argv[2] || 'mixed';
-const duration = Number(process.argv[3] || 25) * 1000;
+const args = process.argv.slice(2);
+let BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+let mode = 'mixed';
+let duration = 25 * 1000;
+
+for (const arg of args) {
+  if (arg.startsWith('http://') || arg.startsWith('https://')) {
+    BASE_URL = arg.replace(/\/$/, '');
+  } else if (!isNaN(Number(arg))) {
+    duration = Number(arg) * 1000;
+  } else if (['mixed', 'attack', 'flashsale', 'normal', 'surge'].includes(arg.toLowerCase())) {
+    mode = arg.toLowerCase();
+  }
+}
 
 const GENUINE_ENDPOINTS = [
   '/api/v1/products',
@@ -58,14 +66,42 @@ async function fire(reqObj) {
   }
 }
 
+async function checkConnection() {
+  try {
+    const check = await fetch(`${BASE_URL}/health`);
+    if (!check.ok && check.status !== 503) {
+      throw new Error(`Server returned HTTP ${check.status}`);
+    }
+    return true;
+  } catch (err) {
+    console.error(`\n❌ Could not connect to gateway at: ${BASE_URL}`);
+    console.error(`   Error details: ${err.message}\n`);
+
+    if (BASE_URL.includes('localhost') || BASE_URL.includes('127.0.0.1')) {
+      console.error(`👉 Is your local server running?`);
+      console.error(`   Start your server in another terminal by running:`);
+      console.error(`   npm start\n`);
+      console.error(`👉 Or if you want to test your live Render deployment, pass your URL:`);
+      console.error(`   node scripts/simulateTraffic.js https://your-app-name.onrender.com\n`);
+    } else {
+      console.error(`👉 If this is a free-tier Render deployment, it may be sleeping.`);
+      console.error(`   Open ${BASE_URL} in your browser once to wake it up, then re-run.\n`);
+    }
+    process.exit(1);
+  }
+}
+
 async function run() {
+  console.log(`Connecting to ${BASE_URL}...`);
+  await checkConnection();
+
   console.log(`\n======================================================`);
   console.log(` Traffic Shield Real-Traffic Simulator`);
   console.log(` Target Gateway: ${BASE_URL}`);
   console.log(` Mode:           ${mode}`);
   console.log(` Duration:       ${duration / 1000} seconds`);
   console.log(`======================================================\n`);
-  console.log(`Watch live chart and audit movements in your dashboard!\n`);
+  console.log(`Connected! Sending live traffic now. Check your dashboard.\n`);
 
   const start = Date.now();
   let totalSent = 0;
@@ -74,7 +110,7 @@ async function run() {
 
   const tick = async () => {
     if (Date.now() - start > duration) {
-      console.log(`\nSimulation complete!`);
+      console.log(`\n\nSimulation complete!`);
       console.log(`Total Requests: ${totalSent}`);
       console.log(`Allowed (200):  ${allowed}`);
       console.log(`Throttled (429): ${throttled}\n`);
