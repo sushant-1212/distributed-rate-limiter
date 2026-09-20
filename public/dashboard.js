@@ -5,7 +5,7 @@
   const canvas = document.getElementById('chart');
   const ctx = canvas.getContext('2d');
 
-  let seenLogTimes = new Set();
+  let circuitBreakerOpen = false;
 
   function setSignal(id, val01) {
     const fill = document.getElementById(id);
@@ -22,16 +22,16 @@
   }
 
   function renderGauge(classification) {
-    const p = classification.genuineProbability;
+    const p = classification ? classification.genuineProbability : 1.0;
     const angle = -90 + p * 180;
     needle.style.transform = `rotate(${angle}deg)`;
     scoreEl.textContent = Math.round(p * 100) + '%';
 
-    const v = classification.verdict;
+    const v = classification ? classification.verdict : 'monitoring';
     const map = {
-      genuine_surge: ['GENUINE SURGE', 'var(--genuine)'],
+      genuine_surge: ['GENUINE TRAFFIC', 'var(--genuine)'],
       attack_detected: ['ATTACK DETECTED', 'var(--attack)'],
-      ambiguous: ['AMBIGUOUS', 'var(--amber)'],
+      ambiguous: ['EVALUATING', 'var(--amber)'],
       monitoring: ['MONITORING', 'var(--muted)'],
     };
     const [label, color] = map[v] || map.monitoring;
@@ -39,17 +39,50 @@
     verdict.style.color = color;
     scoreEl.style.color = color;
 
-    setSignal('sig1', classification.features?.timingRegularity);
-    setSignal('sig2', classification.features?.sourceDiversity);
-    setSignal('sig3', classification.features?.endpointDiversity);
+    setSignal('sig1', p);
+    setSignal('sig2', p);
+    setSignal('sig3', p);
   }
 
-  function renderAdaptive(adaptive) {
-    document.getElementById('adaptive-mode').textContent = adaptive.mode;
-    document.getElementById('cap').textContent = adaptive.globalCapacity;
-    document.getElementById('refill').textContent = Number(adaptive.globalRefill).toFixed(1);
-    document.getElementById('throttled').textContent =
-      adaptive.throttledSources.length ? adaptive.throttledSources.join(', ') : 'none';
+  function renderSystemState(data) {
+    if (data.circuitBreaker) {
+      circuitBreakerOpen = data.circuitBreaker.isOpen;
+      const cbBadge = document.getElementById('cb-badge');
+      const btnCb = document.getElementById('btn-cb-toggle');
+      if (circuitBreakerOpen) {
+        cbBadge.textContent = 'OPEN (FALLBACK)';
+        cbBadge.className = 'badge badge-danger';
+        btnCb.textContent = 'Reset Circuit Breaker';
+      } else {
+        cbBadge.textContent = 'CLOSED (NORMAL)';
+        cbBadge.className = 'badge badge-healthy';
+        btnCb.textContent = 'Trip Circuit Breaker';
+      }
+    }
+
+    if (data.concurrency) {
+      document.getElementById('concurrency-stat').textContent = `${data.concurrency.inFlight} / ${data.concurrency.currentLimit}`;
+    }
+
+    if (data.redis) {
+      document.getElementById('redis-status').textContent = data.redis.connected ? 'Connected' : 'Mock/Offline';
+    }
+
+    if (data.hierarchicalL1) {
+      document.getElementById('l1-hit-rate').textContent = (data.hierarchicalL1.l1HitRatePercent || 0) + '%';
+    }
+
+    if (data.anomalyDetection) {
+      document.getElementById('entropy-score').textContent = (data.anomalyDetection.normalizedEntropy || 1.0).toFixed(2);
+    }
+
+    if (data.adaptive) {
+      document.getElementById('adaptive-mode').textContent = data.adaptive.mode || 'normal';
+    }
+
+    if (data.classification) {
+      renderGauge(data.classification);
+    }
   }
 
   function renderMetrics(totals, history) {
@@ -60,26 +93,76 @@
     document.getElementById('m-rps').textContent = last ? last.allowed + last.blocked : 0;
   }
 
-  function drawChart(history) {
-    const w = canvas.width, h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    ctx.strokeStyle = '#1A2440';
+  function renderChart(history) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const pad = 24;
+    const w = canvas.width - pad * 2;
+    const h = canvas.height - pad * 2;
+
+    let maxRps = 10;
+    for (const d of history) {
+      const tot = d.allowed + d.blocked;
+      if (tot > maxRps) maxRps = tot;
+    }
+    maxRps = Math.ceil(maxRps / 5) * 5;
+
+    // Grid lines
+    ctx.strokeStyle = '#1a2744';
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
-      const y = (h / 4) * i;
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      const y = pad + (h / 4) * i;
+      ctx.beginPath();
+      ctx.moveTo(pad, y);
+      ctx.lineTo(pad + w, y);
+      ctx.stroke();
     }
-    if (history.length === 0) return;
-    const maxVal = Math.max(10, ...history.map((b) => b.allowed + b.blocked));
-    const bw = w / 30;
-    history.forEach((b, i) => {
-      const x = w - (history.length - i) * bw;
-      const allowedH = (b.allowed / maxVal) * h;
-      const blockedH = (b.blocked / maxVal) * h;
-      ctx.fillStyle = '#3DDC84';
-      ctx.fillRect(x + 2, h - allowedH, bw - 4, allowedH);
-      ctx.fillStyle = '#FF5A5F';
-      ctx.fillRect(x + 2, h - allowedH - blockedH, bw - 4, blockedH);
+
+    if (history.length < 2) return;
+    const step = w / (Math.max(history.length - 1, 1));
+
+    // Allowed (green line)
+    ctx.strokeStyle = '#3DDC84';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    history.forEach((d, i) => {
+      const x = pad + i * step;
+      const y = pad + h - (d.allowed / maxRps) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Blocked (red line)
+    ctx.strokeStyle = '#FF5A5F';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    history.forEach((d, i) => {
+      const x = pad + i * step;
+      const y = pad + h - (d.blocked / maxRps) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  function renderLogs(logs) {
+    const tbody = document.getElementById('log-body');
+    tbody.innerHTML = '';
+    logs.slice(0, 15).forEach((l) => {
+      const tr = document.createElement('tr');
+      const badge = l.allowed
+        ? '<span style="color:var(--genuine)">✓ 200 ALLOWED</span>'
+        : '<span style="color:var(--attack)">✗ 429 THROTTLED</span>';
+      tr.innerHTML = `
+        <td>${l.time || '—'}</td>
+        <td><code>${l.sourceId || 'anonymous'}</code></td>
+        <td>${l.endpoint}</td>
+        <td>${l.cost || 1}</td>
+        <td><span class="badge badge-warn">${l.tier || 'free'}</span></td>
+        <td>${l.latencyMs || 0}ms</td>
+        <td>${badge}</td>
+      `;
+      tbody.appendChild(tr);
     });
   }
 
@@ -87,59 +170,118 @@
     const container = document.getElementById('buckets');
     container.innerHTML = '';
     buckets.forEach((b) => {
-      if (b.tokens === undefined) return;
-      const pct = Math.max(0, Math.min(100, (b.tokens / b.capacity) * 100));
-      const div = document.createElement('div');
-      div.className = 'bucket' + (b.throttled ? ' throttled' : '');
-      div.innerHTML = `<div class="id">${b.sourceId}</div>
-        <div class="bar"><div class="bar-fill" style="width:${pct}%; background:${b.throttled ? 'var(--attack)' : 'var(--genuine)'}"></div></div>
-        <div class="lvl">${b.tokens.toFixed(1)}/${b.capacity}</div>`;
-      container.appendChild(div);
+      const el = document.createElement('div');
+      el.className = 'bucket' + (b.throttled ? ' throttled' : '');
+      const pct = Math.min(100, Math.round((b.tokens / b.capacity) * 100));
+      const fillCol = b.throttled ? 'var(--attack)' : pct > 30 ? 'var(--genuine)' : 'var(--amber)';
+      el.innerHTML = `
+        <div class="id" title="${b.sourceId}">${b.sourceId}</div>
+        <div class="bar"><div class="bar-fill" style="width:${pct}%; background:${fillCol}"></div></div>
+        <div class="lvl">${Math.round(b.tokens)} / ${b.capacity}</div>
+      `;
+      container.appendChild(el);
     });
   }
 
-  function renderLog(entries) {
-    const tbody = document.getElementById('log-body');
-    // entries arrive most-recent-first from the server; rebuild if the
-    // newest entry is one we haven't shown yet.
-    const newestKey = entries[0] ? entries[0].time + entries[0].sourceId + entries[0].endpoint : null;
-    if (newestKey && seenLogTimes.has(newestKey) && tbody.rows.length > 0) return;
-    seenLogTimes.add(newestKey);
-
-    tbody.innerHTML = '';
-    entries.slice(0, 30).forEach((e) => {
-      const tr = document.createElement('tr');
-      const time = new Date(e.time).toLocaleTimeString('en-GB');
-      tr.innerHTML = `<td>${time}</td><td>${e.sourceId}</td><td>${e.endpoint}</td>
-        <td><span class="tag ${e.allowed ? 'allow' : 'block'}">${e.allowed ? 'ALLOW' : 'BLOCK'}</span></td>`;
-      tbody.appendChild(tr);
-    });
-  }
-
-  async function poll() {
+  async function refresh() {
     try {
-      const [stateRes, historyRes, logsRes, bucketsRes] = await Promise.all([
-        fetch('/api/state'),
-        fetch('/api/history'),
-        fetch('/api/logs'),
-        fetch('/api/buckets'),
+      const [stateRes, histRes, logsRes, buckRes] = await Promise.all([
+        fetch('/api/state').then((r) => r.json()),
+        fetch('/api/history').then((r) => r.json()),
+        fetch('/api/logs').then((r) => r.json()),
+        fetch('/api/buckets').then((r) => r.json()),
       ]);
-      const state = await stateRes.json();
-      const history = await historyRes.json();
-      const logs = await logsRes.json();
-      const buckets = await bucketsRes.json();
 
-      renderGauge(state.classification);
-      renderAdaptive(state.adaptive);
-      renderMetrics(state.totals, history);
-      drawChart(history);
-      renderBuckets(buckets);
-      renderLog(logs);
-    } catch (err) {
-      console.error('poll failed', err);
+      renderSystemState(stateRes);
+      renderMetrics(stateRes.totals || { total: 0, allowed: 0, blocked: 0 }, histRes);
+      renderChart(histRes);
+      renderLogs(logsRes);
+      renderBuckets(buckRes);
+    } catch {
+      // transient poll error
     }
   }
 
-  poll();
-  setInterval(poll, 700);
+  setInterval(refresh, 600);
+  refresh();
+
+  // Global actions for interactive buttons
+  window.sendReq = async function (endpoint, apiKey) {
+    try {
+      await fetch(endpoint, {
+        headers: { 'x-api-key': apiKey },
+      });
+      refresh();
+    } catch {}
+  };
+
+  window.sendWebhookQueue = async function () {
+    try {
+      await fetch('/api/v1/webhooks/orders', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-throttle-policy': 'queue',
+          'x-user-id': 'webhook-client-99',
+        },
+        body: JSON.stringify({ event: 'order.created', amount: 499 }),
+      });
+      refresh();
+    } catch {}
+  };
+
+  window.solvePoWAndBypass = async function () {
+    try {
+      const challengeRes = await fetch('/api/v1/challenge').then((r) => r.json());
+      if (!challengeRes.challenge) return;
+      const { nonce, timestamp, difficulty, signature, prefix } = challengeRes.challenge;
+
+      let suffix = 0;
+      const enc = new TextEncoder();
+      while (suffix < 100000) {
+        const data = enc.encode(nonce + suffix);
+        const hashBuf = await crypto.subtle.digest('SHA-256', data);
+        const hashHex = Array.from(new Uint8Array(hashBuf))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+        if (hashHex.startsWith(prefix)) break;
+        suffix++;
+      }
+
+      const solution = `${nonce}:${suffix}:${timestamp}:${difficulty}:${signature}`;
+      await fetch('/api/v1/ai-generate', {
+        headers: {
+          'x-pow-solution': solution,
+          'x-user-id': 'pow-verified-user',
+        },
+      });
+      refresh();
+    } catch (e) {
+      console.error('PoW solve error:', e);
+    }
+  };
+
+  window.sendBurst = async function () {
+    const promises = [];
+    for (let i = 0; i < 20; i++) {
+      promises.push(
+        fetch('/api/v1/ai-generate', {
+          headers: { 'x-user-id': 'burst-tester' },
+        })
+      );
+    }
+    await Promise.all(promises);
+    refresh();
+  };
+
+  window.toggleCircuitBreaker = async function () {
+    const action = circuitBreakerOpen ? 'reset' : 'trip';
+    await fetch(`/api/admin/circuit-breaker/${action}`, { method: 'POST' });
+    refresh();
+  };
+
+  window.resetStats = async function () {
+    await fetch('/api/reset', { method: 'POST' });
+    refresh();
+  };
 })();
