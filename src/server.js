@@ -16,6 +16,59 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// ---- Rolling Request Telemetry for Dashboard ----------------------------
+const recentLogs = []; // { time, sourceId, endpoint, allowed, tier, cost, latencyMs }
+const perSecond = []; // { sec, allowed, blocked }
+const totals = { total: 0, allowed: 0, blocked: 0 };
+const MAX_LOGS = 60;
+
+function recordRequestTelemetry(sourceId, endpoint, allowed, tier, cost, latencyMs) {
+  const t = Date.now();
+  totals.total += 1;
+  if (allowed) totals.allowed += 1;
+  else totals.blocked += 1;
+
+  const sec = Math.floor(t / 1000);
+  let bin = perSecond[perSecond.length - 1];
+  if (!bin || bin.sec !== sec) {
+    bin = { sec, allowed: 0, blocked: 0 };
+    perSecond.push(bin);
+    if (perSecond.length > 40) perSecond.shift();
+  }
+  if (allowed) bin.allowed += 1;
+  else bin.blocked += 1;
+
+  recentLogs.unshift({
+    time: new Date(t).toISOString().substring(11, 19),
+    sourceId,
+    endpoint,
+    allowed,
+    tier,
+    cost,
+    latencyMs,
+  });
+  if (recentLogs.length > MAX_LOGS) recentLogs.pop();
+}
+
+// Global Gateway Telemetry Middleware (Must be before routes)
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  res.on('finish', () => {
+    // Record all API routes except internal dashboard polling
+    if (req.path.startsWith('/api/') || req.path.startsWith('/api/v1/')) {
+      if (req.path === '/api/state' || req.path === '/api/history' || req.path === '/api/logs' || req.path === '/api/buckets') {
+        return;
+      }
+      const sourceId = req.get('x-api-key') || req.get('x-user-id') || req.ip || 'anonymous';
+      const allowed = res.statusCode < 400 || res.statusCode === 428;
+      const tier = res.get('X-RateLimit-Tier') || 'standard';
+      const latencyMs = Math.max(1, Date.now() - startTime);
+      recordRequestTelemetry(sourceId, req.path, allowed, tier, 1, latencyMs);
+    }
+  });
+  next();
+});
+
 const PORT = Number(process.env.PORT || 3000);
 
 // Start background off-path anomaly detector
@@ -93,53 +146,14 @@ legacyRoutes.forEach((route) => {
 });
 app.get('/api/login', rateLimitMiddleware(), (req, res) => res.json({ ok: true, route: '/api/login' }));
 
-// ---- Rolling Request Telemetry for Dashboard ----------------------------
-const recentLogs = []; // { time, sourceId, endpoint, allowed, tier, cost, latencyMs }
-const perSecond = []; // { sec, allowed, blocked }
-const totals = { total: 0, allowed: 0, blocked: 0 };
-const MAX_LOGS = 50;
+// Authentication route (common target for credential stuffing)
+app.all('/api/v1/auth/login', rateLimitMiddleware(), (req, res) => {
+  res.json({ ok: true, message: 'Authentication route reached', token: 'jwt_mock_token' });
+});
 
-function recordRequestTelemetry(sourceId, endpoint, allowed, tier, cost, latencyMs) {
-  const t = Date.now();
-  totals.total += 1;
-  if (allowed) totals.allowed += 1;
-  else totals.blocked += 1;
-
-  const sec = Math.floor(t / 1000);
-  let bin = perSecond[perSecond.length - 1];
-  if (!bin || bin.sec !== sec) {
-    bin = { sec, allowed: 0, blocked: 0 };
-    perSecond.push(bin);
-    if (perSecond.length > 40) perSecond.shift();
-  }
-  if (allowed) bin.allowed += 1;
-  else bin.blocked += 1;
-
-  recentLogs.unshift({
-    time: new Date(t).toISOString().substring(11, 19),
-    sourceId,
-    endpoint,
-    allowed,
-    tier,
-    cost,
-    latencyMs,
-  });
-  if (recentLogs.length > MAX_LOGS) recentLogs.pop();
-}
-
-// Middleware to record request metrics
-app.use((req, res, next) => {
-  const startTime = Date.now();
-  res.on('finish', () => {
-    if (req.path.startsWith('/api/v1/') || legacyRoutes.includes(req.path) || req.path === '/api/login') {
-      const sourceId = req.get('x-api-key') || req.get('x-user-id') || req.ip || 'anonymous';
-      const allowed = res.statusCode !== 429;
-      const tier = res.get('X-RateLimit-Tier') || 'unknown';
-      const latencyMs = Date.now() - startTime;
-      recordRequestTelemetry(sourceId, req.path, allowed, tier, 1, latencyMs);
-    }
-  });
-  next();
+// Dynamic wildcard route so users can test ANY custom endpoint
+app.all('/api/v1/*', rateLimitMiddleware(), (req, res) => {
+  res.json({ ok: true, path: req.path, method: req.method, timestamp: Date.now() });
 });
 
 // ---- Dashboard State & Admin Control Plane -------------------------------

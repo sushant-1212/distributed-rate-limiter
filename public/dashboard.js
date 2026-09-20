@@ -208,50 +208,104 @@
   }
 
   // Interactive Sandbox Handlers
-  window.onPresetChange = function () {};
-
-  window.dispatchSelectedPreset = async function () {
-    const preset = document.getElementById('endpointPreset').value;
+  window.sendCustomRequest = async function () {
+    const method = document.getElementById('reqMethod').value;
+    const path = document.getElementById('reqPath').value || '/api/v1/products';
+    const sourceId = document.getElementById('reqSource').value || 'dev_user_1';
     const start = performance.now();
 
     try {
-      if (preset === 'pow') {
-        await solvePoWChallenge();
-        return;
+      const headers = {};
+      if (sourceId.startsWith('key-')) {
+        headers['x-api-key'] = sourceId;
+      } else {
+        headers['x-user-id'] = sourceId;
       }
 
-      let endpoint = '/api/v1/products';
-      let method = 'GET';
-      let headers = {};
-
-      if (preset === 'free') {
-        endpoint = '/api/v1/products';
-        headers['x-api-key'] = 'key-demo-free';
-      } else if (preset === 'pro') {
-        endpoint = '/api/v1/search?q=database';
-        headers['x-api-key'] = 'key-demo-pro';
-      } else if (preset === 'enterprise') {
-        endpoint = '/api/v1/checkout';
-        method = 'POST';
-        headers['x-api-key'] = 'key-demo-ent';
-      } else if (preset === 'ai') {
-        endpoint = '/api/v1/ai-generate';
-        method = 'POST';
-        headers['x-user-id'] = 'heavy-ai-client';
-      } else if (preset === 'webhook') {
-        endpoint = '/api/v1/webhooks/orders';
-        method = 'POST';
-        headers['content-type'] = 'application/json';
-        headers['x-throttle-policy'] = 'queue';
-      }
-
-      const res = await fetch(endpoint, { method, headers });
+      const res = await fetch(path, { method, headers });
       const latency = performance.now() - start;
       updateInspector(res.status, res.statusText, latency, res.headers);
       refresh();
     } catch (err) {
       const latency = performance.now() - start;
       updateInspector(0, 'Network Error', latency, new Headers());
+    }
+  };
+
+  // Real Traffic & Attack Scenarios
+  window.runScenario = async function (type) {
+    const start = performance.now();
+
+    if (type === 'ddos') {
+      // 50 rapid concurrent requests from a single attacker source
+      const botId = 'attacker_botnet_' + Math.floor(Math.random() * 100);
+      const promises = [];
+      for (let i = 0; i < 50; i++) {
+        promises.push(
+          fetch('/api/v1/ai-generate', {
+            method: 'POST',
+            headers: { 'x-user-id': botId },
+          })
+        );
+      }
+      const results = await Promise.all(promises);
+      const lastRes = results[results.length - 1];
+      const latency = performance.now() - start;
+      updateInspector(lastRes.status, `Volumetric Flood: ${results.filter(r => r.status === 429).length}/50 Throttled`, latency, lastRes.headers);
+      refresh();
+    } else if (type === 'stuffing') {
+      // 20 rapid credential stuffing attacks on auth/login from rotating bot IDs
+      const promises = [];
+      for (let i = 0; i < 20; i++) {
+        promises.push(
+          fetch('/api/v1/auth/login', {
+            method: 'POST',
+            headers: {
+              'x-user-id': `stuffer_ip_${Math.floor(Math.random() * 20)}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ user: `victim_${i}@example.com`, password: 'password123' }),
+          })
+        );
+      }
+      const results = await Promise.all(promises);
+      const lastRes = results[results.length - 1];
+      const latency = performance.now() - start;
+      updateInspector(lastRes.status, `Credential Stuffing: ${results.length} attempts dispatched`, latency, lastRes.headers);
+      refresh();
+    } else if (type === 'surge') {
+      // 25 diverse genuine user requests across multiple routes
+      const routes = ['/api/v1/products', '/api/v1/search', '/api/v1/checkout'];
+      const keys = ['key-demo-free', 'key-demo-pro', 'key-demo-ent'];
+      const promises = [];
+      for (let i = 0; i < 25; i++) {
+        const route = routes[Math.floor(Math.random() * routes.length)];
+        const key = keys[Math.floor(Math.random() * keys.length)];
+        promises.push(
+          fetch(route, {
+            method: route.includes('checkout') ? 'POST' : 'GET',
+            headers: { 'x-api-key': key, 'x-user-id': `shopper_${i}` },
+          })
+        );
+      }
+      const results = await Promise.all(promises);
+      const latency = performance.now() - start;
+      updateInspector(200, `Flash Sale Surge: ${results.filter(r => r.status === 200).length}/25 Allowed`, latency, results[0].headers);
+      refresh();
+    } else if (type === 'webhook') {
+      // Zero-data-loss buffered webhook queue
+      const res = await fetch('/api/v1/webhooks/orders', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-throttle-policy': 'queue',
+          'x-user-id': 'stripe_webhook_worker',
+        },
+        body: JSON.stringify({ event: 'payment.succeeded', id: `evt_${Date.now()}` }),
+      });
+      const latency = performance.now() - start;
+      updateInspector(res.status, 'Zero-Data-Loss: Webhook Buffered in Queue', latency, res.headers);
+      refresh();
     }
   };
 

@@ -146,33 +146,57 @@
           </div>
           <div class="panel-body">
             
+            <!-- Custom Endpoint Dispatcher -->
             <div class="sandbox-group">
-              <label class="sandbox-label" for="endpointPreset">Select Request Preset</label>
-              <select id="endpointPreset" class="select-custom" onchange="onPresetChange()">
-                <option value="free">GET /api/v1/products (Free · Cost 1 · GCRA)</option>
-                <option value="pro">GET /api/v1/search (Pro · Cost 2 · L1 Lease)</option>
-                <option value="enterprise">POST /api/v1/checkout (Enterprise · Cost 5)</option>
-                <option value="ai">POST /api/v1/ai-generate (Heavy · Cost 10)</option>
-                <option value="webhook">POST /api/v1/webhooks/orders (Zero-Data-Loss Queue)</option>
-                <option value="pow">Solve SHA-256 PoW Anti-Bot Challenge</option>
-              </select>
+              <label class="sandbox-label">Custom Endpoint & Method</label>
+              <div style="display:flex; gap:8px;">
+                <select id="reqMethod" class="select-custom" style="width:90px;">
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                </select>
+                <input id="reqPath" type="text" class="select-custom" value="/api/v1/products" placeholder="/api/v1/your-path" />
+              </div>
+            </div>
+
+            <div class="sandbox-group">
+              <label class="sandbox-label">Client Identity / API Key</label>
+              <input id="reqSource" type="text" class="select-custom" value="dev_user_1" placeholder="IP, user ID, or key-demo-pro" />
             </div>
 
             <div class="btn-group">
-              <button class="btn btn-primary" style="flex:1;" onclick="dispatchSelectedPreset()">
-                Dispatch Request
-              </button>
-              <button class="btn btn-secondary" onclick="dispatchBurst()">
-                Burst (20)
-              </button>
-            </div>
-
-            <div class="btn-group">
-              <button id="btnCircuit" class="btn btn-secondary" style="flex:1;" onclick="toggleCircuitBreaker()">
-                Simulate Redis Outage
+              <button class="btn btn-primary" style="flex:1;" onclick="sendCustomRequest()">
+                Send Live Request
               </button>
               <button class="btn btn-secondary" onclick="resetTelemetry()">
                 Clear
+              </button>
+            </div>
+
+            <!-- One-Click Real Traffic & Attack Scenarios -->
+            <div class="sandbox-group" style="margin-top:16px;">
+              <label class="sandbox-label">Real Traffic & Attack Scenarios</label>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                <button class="btn btn-danger" style="font-size:11px; padding:7px 8px;" onclick="runScenario('ddos')">
+                  🔴 Volumetric Flood (50)
+                </button>
+                <button class="btn btn-secondary" style="font-size:11px; padding:7px 8px; border-color:var(--amber-border); color:var(--amber);" onclick="runScenario('stuffing')">
+                  🟠 Credential Stuffing
+                </button>
+                <button class="btn btn-secondary" style="font-size:11px; padding:7px 8px; border-color:var(--emerald-border); color:var(--emerald);" onclick="runScenario('surge')">
+                  🟢 Flash Sale Surge
+                </button>
+                <button class="btn btn-secondary" style="font-size:11px; padding:7px 8px; border-color:var(--blue-border); color:var(--blue);" onclick="runScenario('webhook')">
+                  🔵 Webhook Queue
+                </button>
+              </div>
+            </div>
+
+            <div class="btn-group" style="margin-top:10px;">
+              <button class="btn btn-secondary" style="flex:1; font-size:11px;" onclick="solvePoWChallenge()">
+                🛡️ Solve SHA-256 PoW Challenge
+              </button>
+              <button id="btnCircuit" class="btn btn-secondary" style="font-size:11px;" onclick="toggleCircuitBreaker()">
+                Simulate Redis Outage
               </button>
             </div>
 
