@@ -7,6 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
+    "build": "npm run build:frontend",
+    "build:frontend": "cd frontend && npm run build && node ../scripts/copyBuild.js",
+    "client": "cd frontend && npm run dev",
     "test": "node --test tests/",
     "benchmark": "node benchmarks/loadTest.js",
     "simulate:attack": "node scripts/simulateTraffic.js attack",
