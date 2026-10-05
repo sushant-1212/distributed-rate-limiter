@@ -3,6 +3,8 @@
 **High-Throughput Distributed Rate Limiting & Flow Control Gateway**
 
 [![Node.js](https://img.shields.io/badge/Node.js-v20+-green.svg)](https://nodejs.org)
+[![React](https://img.shields.io/badge/React-18%2F19-61DAFB.svg?logo=react)](https://react.dev)
+[![Vite](https://img.shields.io/badge/Vite-5+-646CFF.svg?logo=vite)](https://vitejs.dev)
 [![Redis](https://img.shields.io/badge/Redis-v7+-red.svg)](https://redis.io)
 [![IETF RFC 6585](https://img.shields.io/badge/Standard-IETF%20RFC%206585-blue.svg)](https://tools.ietf.org/id/draft-polli-ratelimit-headers-03.html)
 [![Prometheus](https://img.shields.io/badge/Metrics-Prometheus-orange.svg)](https://prometheus.io)
@@ -149,6 +151,19 @@ docker-compose up -d
 - **Prometheus UI:** `http://localhost:9090/`
 - **Metrics Endpoint:** `http://localhost:3000/metrics`
 - **Health Check:** `http://localhost:3000/health`
+
+### 5. Full-Stack React Dashboard Development
+The management control plane is built with **React 18, Vite, and Lucide Icons** located in `/frontend`:
+- Run the React development server with hot-module replacement (HMR):
+  ```bash
+  npm run client
+  ```
+  Opens at `http://localhost:5173/` (pre-configured with Vite proxy to port 3000).
+- Compile production bundle:
+  ```bash
+  npm run build
+  ```
+  Builds optimized bundles into `frontend/dist/` and syncs to `public/` for unified zero-config hosting.
 
 ---
 
