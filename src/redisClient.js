@@ -22,7 +22,7 @@ function createClient() {
     connectTimeout: 2000,
     lazyConnect: false,
     retryStrategy(times) {
-      if (times > 10) return null;
+      // Reconnect indefinitely with backoff capped at 2000ms
       return Math.min(times * 100, 2000);
     },
   });
