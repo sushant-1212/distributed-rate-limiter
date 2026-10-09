@@ -17,6 +17,16 @@ Traditional rate limiters introduce network bottlenecks by executing a synchrono
 
 ---
 
+## 🖥️ Production Dashboard & Telemetry (Deployed on AWS EC2)
+
+<p align="center">
+  <img src="assets/dashboard.jpg" alt="TrafficShield v2.0 Live Telemetry Dashboard" width="100%" />
+</p>
+
+> **Live Telemetry & Control Plane**: Real-time React 18 interface tracking sub-millisecond p99 evaluations, two-tier L1 lease hit rates (**95.0%**), and Netflix TCP Vegas adaptive concurrency throttling under simulated traffic surges.
+
+---
+
 ## 🏛️ System Architecture
 
 ```text
@@ -68,6 +78,10 @@ Traditional rate limiters introduce network bottlenecks by executing a synchrono
 * **The Solution:** Gateway instances atomically acquire a **leased batch of tokens** (e.g., 20–50 tokens) from Redis using Lua scripts. Subsequent requests consume from **local process memory at sub-microsecond speeds (~0.02ms)**.
 * **Impact:** Slashes Redis network load by **90%+**, reducing p99 latency from ~100ms down to sub-millisecond levels.
 
+<p align="center">
+  <img src="assets/l1-lease-benchmark.jpg" alt="L1 Cache Lease Live Verification" width="85%" />
+</p>
+
 ### 2. Pluggable Industry-Standard Algorithms
 * **GCRA (Generic Cell Rate Algorithm):** The telecommunications and Stripe standard for leaky-bucket metering. Relies on a single Theoretical Arrival Time (`TAT`) timestamp per key, eliminating boundary-reset burst anomalies with $O(1)$ memory.
 * **Sliding Window Counter:** Approximates sliding request windows by weighting previous-window counters with elapsed window percentages (Cloudflare pattern). Space complexity: $O(1)$.
@@ -92,9 +106,20 @@ Traditional rate limiters introduce network bottlenecks by executing a synchrono
 ### 6. Zero-Data-Loss Buffered Webhook Queue
 * For mission-critical asynchronous pipelines (e.g. Stripe Webhooks, order events), requests exceeding quota can be buffered into a **Redis Priority Queue** (`202 Accepted`) rather than dropped with 429, guaranteeing zero data loss.
 
+<p align="center">
+  <img src="assets/webhook-queue.jpg" alt="Zero Data Loss Webhook Queue Verification" width="85%" />
+</p>
+
 ### 7. Fault-Tolerant Circuit Breaker with Local Fallback
 * Continuously monitors Redis connection health and request timeouts (`CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`).
 * If Redis drops or becomes unresponsive, the circuit breaker engages a **local degraded in-memory limiter**, ensuring upstream microservices remain operational without leaving backend resources unprotected.
+
+<p align="center">
+  <img src="assets/circuit-breaker.jpg" alt="Circuit Breaker Active State" width="85%" />
+</p>
+<p align="center">
+  <img src="assets/redis-downtime-benchmark.jpg" alt="Local Fallback Benchmark During Redis Downtime" width="85%" />
+</p>
 
 ### 8. Enterprise Observability & IETF Standards
 * Full compliance with IETF draft RateLimit specifications (`RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, `RateLimit-Policy`, and `Retry-After`).
